@@ -1,7 +1,8 @@
-import React, { useContext, useEffect, useState } from 'react';
+import React, { useContext } from 'react';
 import { useRouter } from '@/utils/router';
 import {
     Box,
+    Chip,
     Drawer,
     List,
     ListItemButton,
@@ -14,16 +15,18 @@ import AlarmsIcon from '@mui/icons-material/Alarm';
 import CalendarIcon from '@mui/icons-material/CalendarMonth';
 import SettingsIcon from '@mui/icons-material/Settings';
 import WatchIcon from '@mui/icons-material/Watch';
+import ScienceRoundedIcon from '@mui/icons-material/ScienceRounded';
 import { ConnectionContext } from '@/App';
 import { watchInfo } from '@api/WatchInfo';
 
-export const SIDEBAR_WIDTH = 260;
+export const SIDEBAR_WIDTH = 272;
 
 const NAV_ITEMS = [
     { label: 'Time', icon: TimeIcon, path: '/time/Time' },
     { label: 'Alarms', icon: AlarmsIcon, path: '/alarms/Alarms' },
     { label: 'Events', icon: CalendarIcon, path: '/reminders/Reminders' },
     { label: 'Settings', icon: SettingsIcon, path: '/settings/Settings' },
+    { label: 'BLE Lab', icon: ScienceRoundedIcon, path: '/ble-lab', experimental: true },
 ];
 
 const SideNavigation: React.FC = () => {
@@ -36,17 +39,6 @@ const SideNavigation: React.FC = () => {
         return NAV_ITEMS;
     }, [isConnected]);
 
-    const handleNavigation = (path: string) => {
-        router.push(path);
-    };
-
-    const isActive = (path: string) => {
-        if (path === '/') {
-            return router.pathname === '/';
-        }
-        return router.pathname === path;
-    };
-
     return (
         <Drawer
             variant="permanent"
@@ -54,170 +46,88 @@ const SideNavigation: React.FC = () => {
                 width: SIDEBAR_WIDTH,
                 flexShrink: 0,
                 display: { xs: 'none', md: 'block' },
-                '& .MuiDrawer-paper': {
-                    width: SIDEBAR_WIDTH,
-                    boxSizing: 'border-box',
-                    backgroundColor: 'background.paper',
-                    borderRight: '1px solid',
-                    borderColor: 'divider',
-                },
+                '& .MuiDrawer-paper': { width: SIDEBAR_WIDTH, boxSizing: 'border-box' },
             }}
         >
-            {/* App Header / Branding */}
-            <Box
-                sx={{
-                    px: 3,
-                    py: 3,
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 1.5,
-                    borderBottom: '1px solid',
-                    borderColor: 'divider',
-                }}
-            >
-                <Box
-                    sx={{
-                        width: 40,
-                        height: 40,
-                        borderRadius: '12px',
-                        background: 'linear-gradient(135deg, #8B5E3C 0%, #5C3A1E 100%)',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        color: 'white',
-                    }}
-                >
-                    <WatchIcon fontSize="small" />
+            <Box sx={{ px: 2.5, pt: 3, pb: 2.5 }}>
+                <Box sx={{ display: 'flex', alignItems: 'center', gap: 1.5 }}>
+                    <Box
+                        sx={{
+                            width: 44,
+                            height: 44,
+                            borderRadius: 2.5,
+                            background: 'linear-gradient(135deg, #7FDBFF 0%, #3E7CB1 100%)',
+                            display: 'grid',
+                            placeItems: 'center',
+                            color: '#071018',
+                            boxShadow: '0 0 30px rgba(127,219,255,0.16)',
+                        }}
+                    >
+                        <WatchIcon />
+                    </Box>
+                    <Box>
+                        <Typography fontWeight={800} lineHeight={1.15}>G-Shock Lab</Typography>
+                        <Typography variant="caption" color="text.secondary">Smart Sync + protocol tools</Typography>
+                    </Box>
                 </Box>
-                <Box>
-                    <Typography
-                        variant="subtitle1"
-                        sx={{
-                            fontWeight: 600,
-                            color: 'text.primary',
-                            lineHeight: 1.2,
-                        }}
-                    >
-                        G-Shock Smart Sync Webapp
-                    </Typography>
-                    <Typography
-                        variant="caption"
-                        sx={{
-                            color: 'text.secondary',
-                        }}
-                    >
-                        G-Shock Watch Manager
-                    </Typography>
+
+                <Box sx={{ mt: 2.25, p: 1.5, borderRadius: 2.5, bgcolor: 'rgba(255,255,255,0.035)', border: '1px solid', borderColor: 'divider' }}>
+                    <StackStatus connected={isConnected} />
                 </Box>
             </Box>
 
-            {/* Navigation Items */}
-            <Box sx={{ px: 2, py: 2 }}>
-                <List disablePadding sx={{ display: 'flex', flexDirection: 'column', gap: 0.5 }}>
-                    {visibleItems.map((item) => {
-                        const active = isActive(item.path);
-                        const isDisabled = !isConnected;
+            <Box sx={{ px: 1.5 }}>
+                <Typography variant="overline" color="text.secondary" sx={{ px: 1.5, letterSpacing: '0.12em', fontSize: 10 }}>
+                    Watch
+                </Typography>
+                <List disablePadding sx={{ mt: 0.5, display: 'flex', flexDirection: 'column', gap: 0.5 }}>
+                    {visibleItems.map(item => {
+                        const active = router.pathname === item.path;
                         return (
                             <ListItemButton
                                 key={item.path}
-                                onClick={() => !isDisabled && handleNavigation(item.path)}
+                                onClick={() => isConnected && router.push(item.path)}
                                 selected={active}
-                                disabled={isDisabled}
+                                disabled={!isConnected}
                                 sx={{
-                                    py: 1.5,
-                                    px: 2,
-                                    borderRadius: '100px',
                                     minHeight: 48,
+                                    borderRadius: 2.5,
+                                    px: 1.5,
                                     '&.Mui-selected': {
-                                        backgroundColor: 'rgba(139, 94, 60, 0.12)',
-                                        '& .MuiListItemIcon-root': {
-                                            color: 'primary.main',
-                                        },
-                                        '& .MuiListItemText-primary': {
-                                            fontWeight: 600,
-                                            color: 'primary.main',
-                                        },
-                                    },
-                                    '&.Mui-disabled': {
-                                        opacity: 0.5,
-                                        backgroundColor: 'transparent',
-                                        '& .MuiListItemIcon-root': {
-                                            color: 'text.disabled',
-                                        },
-                                        '& .MuiListItemText-primary': {
-                                            color: 'text.disabled',
-                                        },
-                                        cursor: 'not-allowed',
-                                    },
-                                    '&:hover:not(.Mui-disabled)': {
-                                        backgroundColor: active
-                                            ? 'rgba(139, 94, 60, 0.16)'
-                                            : 'rgba(139, 94, 60, 0.08)',
+                                        bgcolor: 'rgba(127,219,255,0.11)',
+                                        color: 'primary.main',
+                                        '&:hover': { bgcolor: 'rgba(127,219,255,0.14)' },
                                     },
                                 }}
                             >
-                                <ListItemIcon
-                                    sx={{
-                                        minWidth: 40,
-                                        color: isDisabled
-                                            ? 'text.disabled'
-                                            : active ? 'primary.main' : 'text.secondary',
-                                    }}
-                                >
-                                    <item.icon />
+                                <ListItemIcon sx={{ minWidth: 38, color: active ? 'primary.main' : 'text.secondary' }}>
+                                    <item.icon fontSize="small" />
                                 </ListItemIcon>
-                                <ListItemText
-                                    primary={
-                                        <Typography
-                                            sx={{
-                                                fontSize: '0.9375rem',
-                                                fontWeight: active ? 600 : 500,
-                                                color: isDisabled
-                                                    ? 'text.disabled'
-                                                    : active ? 'primary.main' : 'text.primary',
-                                            }}
-                                        >
-                                            {item.label}
-                                        </Typography>
-                                    }
-                                />
+                                <ListItemText primary={item.label} primaryTypographyProps={{ fontWeight: active ? 700 : 550, fontSize: 14 }} />
+                                {item.experimental && <Chip label="LAB" size="small" sx={{ height: 20, fontSize: 9, fontWeight: 800 }} />}
                             </ListItemButton>
                         );
                     })}
                 </List>
             </Box>
 
-            {/* Footer */}
-            <Box
-                sx={{
-                    mt: 'auto',
-                    px: 3,
-                    py: 2,
-                    borderTop: '1px solid',
-                    borderColor: 'divider',
-                }}
-            >
-                <Typography
-                    variant="caption"
-                    sx={{
-                        color: 'text.secondary',
-                        display: 'block',
-                    }}
-                >
-                    Casio G-Shock
-                </Typography>
-                <Typography
-                    variant="caption"
-                    sx={{
-                        color: 'text.secondary',
-                        opacity: 0.7,
-                    }}
-                >
-                    Web Bluetooth Sync
-                </Typography>
+            <Box sx={{ mt: 'auto', px: 2.5, py: 2.25, borderTop: '1px solid', borderColor: 'divider' }}>
+                <Typography variant="caption" color="text.secondary">Web Bluetooth · local browser connection</Typography>
             </Box>
         </Drawer>
     );
 };
+
+function StackStatus({ connected }: { connected: boolean }) {
+    return (
+        <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1 }}>
+            <Box>
+                <Typography variant="caption" color="text.secondary">Connection</Typography>
+                <Typography variant="body2" fontWeight={700}>{connected ? 'Watch online' : 'Not connected'}</Typography>
+            </Box>
+            <Box sx={{ width: 9, height: 9, borderRadius: '50%', bgcolor: connected ? 'success.main' : 'text.disabled', boxShadow: connected ? '0 0 12px rgba(102,187,106,.65)' : 'none' }} />
+        </Box>
+    );
+}
 
 export default SideNavigation;
