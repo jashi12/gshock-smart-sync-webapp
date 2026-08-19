@@ -47,9 +47,9 @@ export class StandardProtocol implements WatchProtocol {
             [CasioConstants.CHARACTERISTICS.FIND_PHONE]: (data) => RunActionsIO.onReceived(data as any),
             [CasioConstants.CHARACTERISTICS.CMD_SET_TIMEMODE]: (data) => UnknownIO.onReceived(data as any),
             [CasioConstants.CHARACTERISTICS.CASIO_HOME_TIME]: (data) => HomeTimeIO.onReceived(data as any),
-            [CasioConstants.CHARACTERISTICS.GW_BX5600_SP_DATA_HEADER_03]: (data) => GwBx5600TimeIO.onReceivedStep2(data as any),
-            [CasioConstants.CHARACTERISTICS.GW_BX5600_SP_DATA_HEADER_05]: (data) => GwBx5600TimeIO.onReceivedStep1(data as any),
-            [CasioConstants.CHARACTERISTICS.GW_BX5600_SP_DATA_HEADER_06]: (data) => GwBx5600TimeIO.onReceivedStep3(data as any),
+            [CasioConstants.CHARACTERISTICS.GW_BX5600_SP_DATA_HEADER_03]: (data) => GwBx5600TimeIO.onReceivedStep2(Utils.bytesToHex(data as any)),
+            [CasioConstants.CHARACTERISTICS.GW_BX5600_SP_DATA_HEADER_05]: (data) => GwBx5600TimeIO.onReceivedStep1(Utils.bytesToHex(data as any)),
+            [CasioConstants.CHARACTERISTICS.GW_BX5600_SP_DATA_HEADER_06]: (data) => GwBx5600TimeIO.onReceivedStep3(Utils.bytesToHex(data as any)),
         };
     }
 
