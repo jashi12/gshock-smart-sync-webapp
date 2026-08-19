@@ -34,6 +34,7 @@ class Connection {
   private characteristicCache: Map<string, BluetoothRemoteGATTCharacteristic>;
   private dataReceivedCallback: ((receivedData: DataView, characteristicUuid: string) => void) | null = null;
   private logListeners = new Set<(entry: BleLogEntry) => void>();
+  private logHistory: BleLogEntry[] = [];
   private logId = 0;
 
   constructor() {
@@ -58,12 +59,28 @@ class Connection {
       bytes,
       message,
     };
+
+    // Keep a rolling history so traffic generated on another page
+    // (for example Settings) is still available when BLE Lab is reopened.
+    this.logHistory.push(entry);
+    if (this.logHistory.length > 500) {
+      this.logHistory.splice(0, this.logHistory.length - 500);
+    }
+
     this.logListeners.forEach(listener => listener(entry));
   };
 
   subscribeLogs = (listener: (entry: BleLogEntry) => void): (() => void) => {
+    // Replay previously captured traffic to newly mounted BLE Lab pages.
+    this.logHistory.forEach(entry => listener(entry));
     this.logListeners.add(listener);
     return () => this.logListeners.delete(listener);
+  };
+
+  getLogs = (): BleLogEntry[] => [...this.logHistory];
+
+  clearLogs = (): void => {
+    this.logHistory = [];
   };
 
   start = async (): Promise<void> => {
