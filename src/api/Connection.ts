@@ -94,6 +94,42 @@ class Connection {
     this.logHistory = [];
   };
 
+  waitForRx = (
+    characteristicUuid: string,
+    predicate: (bytes: number[]) => boolean = () => true,
+    timeoutMs = 2500,
+  ): Promise<number[]> => {
+    return new Promise((resolve, reject) => {
+      const wantedUuid = characteristicUuid.toLowerCase();
+
+      const cleanup = () => {
+        clearTimeout(timeout);
+        this.logListeners.delete(listener);
+      };
+
+      const listener = (entry: BleLogEntry) => {
+        if (
+          entry.direction === 'RX' &&
+          entry.characteristic?.toLowerCase() === wantedUuid &&
+          entry.bytes &&
+          predicate(entry.bytes)
+        ) {
+          cleanup();
+          resolve([...entry.bytes]);
+        }
+      };
+
+      const timeout = setTimeout(() => {
+        this.logListeners.delete(listener);
+        reject(new Error(`Timed out waiting for RX on ${characteristicUuid}`));
+      }, timeoutMs);
+
+      // Deliberately listen only for future traffic; unlike subscribeLogs(),
+      // this does not replay history and therefore cannot match a stale packet.
+      this.logListeners.add(listener);
+    });
+  };
+
   start = async (): Promise<void> => {
     try {
       const device = await navigator.bluetooth.requestDevice({
