@@ -26,6 +26,7 @@ import { ConnectionContext } from '@/App';
 import {
   connection,
   BleCharacteristicInfo,
+  BleGattReconReport,
   BleLogEntry,
 } from '@api/Connection';
 import { CasioConstants } from '@api/CasioConstants';
@@ -70,6 +71,12 @@ const parseHex = (value: string): number[] => {
   });
 };
 
+const propertyText = (item: BleCharacteristicInfo) => [
+  item.read && 'READ',
+  (item.write || item.writeWithoutResponse) && 'WRITE',
+  (item.notify || item.indicate) && 'NOTIFY',
+].filter(Boolean).join(' · ') || 'No exposed operations';
+
 export default function BleLabPage() {
   const { isConnected } = useContext(ConnectionContext);
   const [characteristics, setCharacteristics] = useState<BleCharacteristicInfo[]>([]);
@@ -78,6 +85,8 @@ export default function BleLabPage() {
   const [logs, setLogs] = useState<BleLogEntry[]>([]);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [reconRunning, setReconRunning] = useState(false);
+  const [reconReport, setReconReport] = useState<BleGattReconReport | null>(null);
   const [probeBaseline, setProbeBaseline] = useState(DEFAULT_BASELINE);
   const [probeByte, setProbeByte] = useState(8);
   const [probeRunning, setProbeRunning] = useState(false);
@@ -91,8 +100,11 @@ export default function BleLabPage() {
   const refreshCharacteristics = async () => {
     if (!isConnected) return;
     try {
+      setReconRunning(true);
       setError('');
-      const result = await connection.getCharacteristicInfo();
+      const report = await connection.runGattReconnaissance();
+      const result = report.services.flatMap(service => service.characteristics);
+      setReconReport(report);
       setCharacteristics(result);
       if (!selectedUuid && result.length) {
         const writable = result.find(item => item.write || item.writeWithoutResponse);
@@ -100,6 +112,8 @@ export default function BleLabPage() {
       }
     } catch (e) {
       setError(String(e));
+    } finally {
+      setReconRunning(false);
     }
   };
 
@@ -108,6 +122,7 @@ export default function BleLabPage() {
     else {
       setCharacteristics([]);
       setSelectedUuid('');
+      setReconReport(null);
     }
   }, [isConnected]);
 
@@ -230,8 +245,6 @@ export default function BleLabPage() {
           }]);
         }
 
-        // Return to the known baseline after every individual bit test so
-        // effects cannot accumulate across probe cases.
         await connection.writeRaw(BASIC_SET_UUID, baseline);
         await sleep(350);
       }
@@ -279,6 +292,30 @@ export default function BleLabPage() {
     await navigator.clipboard.writeText(text);
   };
 
+  const copyReconReport = async () => {
+    if (!reconReport) return;
+    const lines = [
+      `Device: ${reconReport.deviceName}`,
+      `Scanned: ${reconReport.scannedAt.toISOString()}`,
+      `Model: ${reconReport.modelNumber ?? 'not exposed'}`,
+      `Serial: ${reconReport.serialNumber ?? 'not exposed'}`,
+      `Firmware: ${reconReport.firmwareRevision ?? 'not exposed'}`,
+      `Hardware: ${reconReport.hardwareRevision ?? 'not exposed'}`,
+      `Software: ${reconReport.softwareRevision ?? 'not exposed'}`,
+      `Manufacturer: ${reconReport.manufacturerName ?? 'not exposed'}`,
+      `Battery: ${reconReport.batteryLevel === undefined ? 'not exposed' : `${reconReport.batteryLevel}%`}`,
+      `DFU candidates: ${reconReport.dfuCandidates.length ? reconReport.dfuCandidates.join(' | ') : 'none detected'}`,
+      '',
+      ...reconReport.services.flatMap(service => [
+        `SERVICE ${service.uuid}${service.label ? ` (${service.label})` : ''}${service.potentialDfu ? ' [DFU CANDIDATE]' : ''}`,
+        ...service.characteristics.map(item =>
+          `  ${item.uuid}${item.label ? ` (${item.label})` : ''} | ${propertyText(item)}${item.valueText ? ` | ${item.valueText}` : ''}`,
+        ),
+      ]),
+    ];
+    await navigator.clipboard.writeText(lines.join('\n'));
+  };
+
   const clearTraffic = () => {
     connection.clearLogs();
     setLogs([]);
@@ -306,10 +343,102 @@ export default function BleLabPage() {
         </Stack>
 
         <Alert severity="warning" variant="outlined" sx={{ mb: 3 }}>
-          Raw writes bypass the normal app safeguards. The automated probe is deliberately restricted to the known 0x13 Basic Settings packet and restores its baseline between tests.
+          Raw writes bypass the normal app safeguards. GATT reconnaissance is read-only; the automated bit probe is restricted to the known 0x13 Basic Settings packet and restores its baseline between tests.
         </Alert>
 
         {error && <Alert severity="error" sx={{ mb: 3 }} onClose={() => setError('')}>{error}</Alert>}
+
+        <Card sx={{ p: 3, mb: 3 }}>
+          <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" gap={2} mb={2.5}>
+            <Box>
+              <Typography fontWeight={700}>GATT / firmware reconnaissance</Typography>
+              <Typography variant="body2" color="text.secondary" mt={0.5}>
+                Read-only scan of permitted BLE services. Reads standard Device Information fields and flags common DFU / bootloader services without writing to them.
+              </Typography>
+            </Box>
+            <Stack direction="row" gap={1} alignItems="flex-start">
+              {reconReport && (
+                <Button size="small" startIcon={<ContentCopyRoundedIcon />} onClick={copyReconReport}>
+                  Copy report
+                </Button>
+              )}
+              <Button
+                size="small"
+                variant="contained"
+                startIcon={<RefreshRoundedIcon />}
+                onClick={refreshCharacteristics}
+                disabled={!isConnected || reconRunning || probeRunning || busy}
+              >
+                Scan GATT
+              </Button>
+            </Stack>
+          </Stack>
+
+          {reconRunning && <LinearProgress sx={{ mb: 2.5 }} />}
+
+          {!reconReport ? (
+            <Typography variant="body2" color="text.secondary">
+              Connect the watch to run reconnaissance. Web Bluetooth can only reveal services granted in the connection permission set.
+            </Typography>
+          ) : (
+            <Stack gap={2.5}>
+              <Stack direction="row" gap={1} flexWrap="wrap">
+                <Chip size="small" label={`${reconReport.services.length} services`} />
+                <Chip size="small" label={`${characteristics.length} characteristics`} />
+                <Chip
+                  size="small"
+                  label={reconReport.dfuCandidates.length ? `${reconReport.dfuCandidates.length} DFU candidate(s)` : 'No known DFU service'}
+                  color={reconReport.dfuCandidates.length ? 'warning' : 'default'}
+                  variant={reconReport.dfuCandidates.length ? 'filled' : 'outlined'}
+                />
+              </Stack>
+
+              <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, 1fr)', lg: 'repeat(4, 1fr)' }, gap: 1.5 }}>
+                {[
+                  ['Model', reconReport.modelNumber],
+                  ['Firmware', reconReport.firmwareRevision],
+                  ['Hardware', reconReport.hardwareRevision],
+                  ['Software', reconReport.softwareRevision],
+                  ['Manufacturer', reconReport.manufacturerName],
+                  ['Serial', reconReport.serialNumber],
+                  ['Battery', reconReport.batteryLevel === undefined ? undefined : `${reconReport.batteryLevel}%`],
+                ].map(([label, value]) => (
+                  <Box key={label} sx={{ p: 1.5, borderRadius: 2, bgcolor: 'action.hover' }}>
+                    <Typography variant="caption" color="text.secondary">{label}</Typography>
+                    <Typography sx={{ mt: 0.25, fontFamily: 'monospace', fontSize: 13, wordBreak: 'break-word' }}>
+                      {value || 'not exposed'}
+                    </Typography>
+                  </Box>
+                ))}
+              </Box>
+
+              {reconReport.dfuCandidates.length > 0 && (
+                <Alert severity="warning" variant="outlined">
+                  {reconReport.dfuCandidates.join(' · ')}
+                </Alert>
+              )}
+
+              <Box>
+                <Typography variant="body2" fontWeight={700} mb={1}>Permitted service map</Typography>
+                <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'repeat(2, 1fr)' }, gap: 1.25 }}>
+                  {reconReport.services.map(service => (
+                    <Box key={service.uuid} sx={{ p: 1.5, borderRadius: 2, bgcolor: 'action.hover' }}>
+                      <Stack direction="row" justifyContent="space-between" gap={1} alignItems="flex-start">
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography sx={{ fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-all' }}>{service.uuid}</Typography>
+                          <Typography variant="caption" color="text.secondary">
+                            {service.label ?? 'Unknown / proprietary service'} · {service.characteristics.length} characteristic(s)
+                          </Typography>
+                        </Box>
+                        {service.potentialDfu && <Chip size="small" label="DFU?" color="warning" />}
+                      </Stack>
+                    </Box>
+                  ))}
+                </Box>
+              </Box>
+            </Stack>
+          )}
+        </Card>
 
         <Card sx={{ p: 3, mb: 3 }}>
           <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" gap={2} mb={2.5}>
@@ -325,7 +454,7 @@ export default function BleLabPage() {
                 variant="outlined"
                 startIcon={<RestoreRoundedIcon />}
                 onClick={loadLatestBaseline}
-                disabled={!isConnected || probeRunning}
+                disabled={!isConnected || probeRunning || reconRunning}
               >
                 Use latest 0x13 TX
               </Button>
@@ -334,7 +463,7 @@ export default function BleLabPage() {
                 variant="contained"
                 startIcon={<PlayArrowRoundedIcon />}
                 onClick={runBitProbe}
-                disabled={!isConnected || probeRunning || busy}
+                disabled={!isConnected || probeRunning || busy || reconRunning}
               >
                 Run probe
               </Button>
@@ -418,12 +547,12 @@ export default function BleLabPage() {
                   <Typography fontWeight={700}>Raw command</Typography>
                   <Typography variant="body2" color="text.secondary">Send bytes directly to a watch characteristic.</Typography>
                 </Box>
-                <Button size="small" startIcon={<RefreshRoundedIcon />} onClick={refreshCharacteristics} disabled={!isConnected || probeRunning}>
+                <Button size="small" startIcon={<RefreshRoundedIcon />} onClick={refreshCharacteristics} disabled={!isConnected || probeRunning || reconRunning}>
                   Refresh
                 </Button>
               </Stack>
 
-              <FormControl fullWidth size="small" disabled={!isConnected || !characteristics.length || probeRunning}>
+              <FormControl fullWidth size="small" disabled={!isConnected || !characteristics.length || probeRunning || reconRunning}>
                 <InputLabel>Characteristic</InputLabel>
                 <Select
                   label="Characteristic"
@@ -432,12 +561,12 @@ export default function BleLabPage() {
                   sx={{ fontFamily: 'monospace' }}
                 >
                   {characteristics.map(item => (
-                    <MenuItem key={item.uuid} value={item.uuid} sx={{ fontFamily: 'monospace', fontSize: 13 }}>
+                    <MenuItem key={`${item.serviceUuid ?? ''}-${item.uuid}`} value={item.uuid} sx={{ fontFamily: 'monospace', fontSize: 13 }}>
                       {shortUuid(item.uuid)} · {[
                         item.read && 'R',
                         (item.write || item.writeWithoutResponse) && 'W',
                         (item.notify || item.indicate) && 'N',
-                      ].filter(Boolean).join('/') || '—'}
+                      ].filter(Boolean).join('/') || '—'}{item.label ? ` · ${item.label}` : ''}
                     </MenuItem>
                   ))}
                 </Select>
@@ -448,6 +577,8 @@ export default function BleLabPage() {
                   {selected.read && <Chip size="small" label="Readable" />}
                   {(selected.write || selected.writeWithoutResponse) && <Chip size="small" label="Writable" />}
                   {(selected.notify || selected.indicate) && <Chip size="small" label="Notifies" />}
+                  {selected.potentialDfu && <Chip size="small" label="DFU candidate" color="warning" />}
+                  {selected.label && <Chip size="small" label={selected.label} variant="outlined" />}
                 </Stack>
               )}
 
@@ -459,7 +590,7 @@ export default function BleLabPage() {
                 onChange={event => setPayload(event.target.value)}
                 placeholder="01 02 0A FF"
                 label="Hex payload"
-                disabled={probeRunning}
+                disabled={probeRunning || reconRunning}
                 sx={{ mt: 2.5, '& textarea': { fontFamily: 'monospace', fontSize: 14 } }}
               />
 
@@ -469,14 +600,14 @@ export default function BleLabPage() {
                   variant="contained"
                   startIcon={<SendRoundedIcon />}
                   onClick={send}
-                  disabled={!isConnected || busy || probeRunning || !(selected?.write || selected?.writeWithoutResponse)}
+                  disabled={!isConnected || busy || probeRunning || reconRunning || !(selected?.write || selected?.writeWithoutResponse)}
                 >
                   Send
                 </Button>
                 <Button
                   variant="outlined"
                   onClick={read}
-                  disabled={!isConnected || busy || probeRunning || !selected?.read}
+                  disabled={!isConnected || busy || probeRunning || reconRunning || !selected?.read}
                 >
                   Read
                 </Button>
@@ -486,15 +617,20 @@ export default function BleLabPage() {
             <Card sx={{ p: 3 }}>
               <Typography fontWeight={700}>Characteristic map</Typography>
               <Typography variant="body2" color="text.secondary" mb={2}>
-                GATT characteristics discovered from the active Casio watch-features service.
+                GATT characteristics discovered across the services permitted to Web Bluetooth.
               </Typography>
               <Stack gap={1}>
                 {characteristics.length ? characteristics.map(item => (
-                  <Box key={item.uuid} sx={{ p: 1.5, borderRadius: 2, bgcolor: 'action.hover' }}>
+                  <Box key={`${item.serviceUuid ?? ''}-${item.uuid}`} sx={{ p: 1.5, borderRadius: 2, bgcolor: 'action.hover' }}>
                     <Typography sx={{ fontFamily: 'monospace', fontSize: 12, wordBreak: 'break-all' }}>{item.uuid}</Typography>
                     <Typography variant="caption" color="text.secondary">
-                      {[item.read && 'READ', (item.write || item.writeWithoutResponse) && 'WRITE', (item.notify || item.indicate) && 'NOTIFY'].filter(Boolean).join(' · ') || 'No exposed operations'}
+                      {item.label ? `${item.label} · ` : ''}{propertyText(item)}{item.valueText ? ` · ${item.valueText}` : ''}
                     </Typography>
+                    {item.serviceUuid && (
+                      <Typography variant="caption" color="text.secondary" display="block" sx={{ fontFamily: 'monospace', wordBreak: 'break-all' }}>
+                        service {item.serviceUuid}
+                      </Typography>
+                    )}
                   </Box>
                 )) : (
                   <Typography variant="body2" color="text.secondary">Connect the watch to enumerate characteristics.</Typography>
@@ -507,11 +643,11 @@ export default function BleLabPage() {
             <Box sx={{ px: 3, py: 2.25, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 2 }}>
               <Box>
                 <Typography fontWeight={700}>Live traffic</Typography>
-                <Typography variant="body2" color="text.secondary">TX writes and RX notifications from the existing API appear here automatically.</Typography>
+                <Typography variant="body2" color="text.secondary">TX writes, RX notifications and reconnaissance findings appear here automatically.</Typography>
               </Box>
               <Stack direction="row" gap={1}>
                 <Button size="small" startIcon={<ContentCopyRoundedIcon />} onClick={copyLogs} disabled={!logs.length}>Copy</Button>
-                <Button size="small" startIcon={<DeleteSweepRoundedIcon />} onClick={clearTraffic} disabled={!logs.length || probeRunning}>Clear</Button>
+                <Button size="small" startIcon={<DeleteSweepRoundedIcon />} onClick={clearTraffic} disabled={!logs.length || probeRunning || reconRunning}>Clear</Button>
               </Stack>
             </Box>
             <Divider />
