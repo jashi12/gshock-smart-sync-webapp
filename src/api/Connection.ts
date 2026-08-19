@@ -17,12 +17,108 @@ export interface BleLogEntry {
 
 export interface BleCharacteristicInfo {
   uuid: string;
+  serviceUuid?: string;
   read: boolean;
   write: boolean;
   writeWithoutResponse: boolean;
   notify: boolean;
   indicate: boolean;
+  label?: string;
+  valueText?: string;
+  valueBytes?: number[];
+  potentialDfu?: boolean;
 }
+
+export interface BleGattServiceInfo {
+  uuid: string;
+  label?: string;
+  potentialDfu: boolean;
+  characteristics: BleCharacteristicInfo[];
+}
+
+export interface BleGattReconReport {
+  deviceName: string;
+  scannedAt: Date;
+  services: BleGattServiceInfo[];
+  firmwareRevision?: string;
+  hardwareRevision?: string;
+  softwareRevision?: string;
+  modelNumber?: string;
+  serialNumber?: string;
+  manufacturerName?: string;
+  batteryLevel?: number;
+  dfuCandidates: string[];
+}
+
+const DEVICE_INFORMATION_SERVICE = '0000180a-0000-1000-8000-00805f9b34fb';
+const BATTERY_SERVICE = '0000180f-0000-1000-8000-00805f9b34fb';
+const MODEL_NUMBER_CHARACTERISTIC = '00002a24-0000-1000-8000-00805f9b34fb';
+const SERIAL_NUMBER_CHARACTERISTIC = '00002a25-0000-1000-8000-00805f9b34fb';
+const FIRMWARE_REVISION_CHARACTERISTIC = '00002a26-0000-1000-8000-00805f9b34fb';
+const HARDWARE_REVISION_CHARACTERISTIC = '00002a27-0000-1000-8000-00805f9b34fb';
+const SOFTWARE_REVISION_CHARACTERISTIC = '00002a28-0000-1000-8000-00805f9b34fb';
+const MANUFACTURER_NAME_CHARACTERISTIC = '00002a29-0000-1000-8000-00805f9b34fb';
+const BATTERY_LEVEL_CHARACTERISTIC = '00002a19-0000-1000-8000-00805f9b34fb';
+
+// Common BLE firmware-update/bootloader services. Requesting them as optional
+// services is read-only by itself; it simply allows Web Bluetooth to reveal
+// them if the watch exposes one of these UUIDs.
+const DFU_SERVICES: Record<string, string> = {
+  '0000fe59-0000-1000-8000-00805f9b34fb': 'Nordic Secure DFU',
+  '00001530-1212-efde-1523-785feabcd123': 'Nordic Legacy DFU',
+  '8ec90001-f315-4f60-9fb8-838830daea50': 'Nordic Buttonless DFU',
+  '8d53dc1d-1db7-4cd3-868b-8a527460aa84': 'Zephyr MCUboot / SMP',
+  '1d14d6ee-fd63-4fa1-bfa4-8f47b42119f0': 'Silicon Labs OTA',
+  'f000ffc0-0451-4000-b000-000000000000': 'TI OAD',
+  '0000fef5-0000-1000-8000-00805f9b34fb': 'Dialog / SUOTA candidate',
+};
+
+const SERVICE_LABELS: Record<string, string> = {
+  [DEVICE_INFORMATION_SERVICE]: 'Device Information',
+  [BATTERY_SERVICE]: 'Battery',
+  [CasioConstants.WATCH_FEATURES_SERVICE_UUID.toLowerCase()]: 'Casio Watch Features',
+  ...DFU_SERVICES,
+};
+
+const CHARACTERISTIC_LABELS: Record<string, string> = {
+  [MODEL_NUMBER_CHARACTERISTIC]: 'Model Number',
+  [SERIAL_NUMBER_CHARACTERISTIC]: 'Serial Number',
+  [FIRMWARE_REVISION_CHARACTERISTIC]: 'Firmware Revision',
+  [HARDWARE_REVISION_CHARACTERISTIC]: 'Hardware Revision',
+  [SOFTWARE_REVISION_CHARACTERISTIC]: 'Software Revision',
+  [MANUFACTURER_NAME_CHARACTERISTIC]: 'Manufacturer Name',
+  [BATTERY_LEVEL_CHARACTERISTIC]: 'Battery Level',
+  '00001534-1212-efde-1523-785feabcd123': 'Nordic DFU Version',
+  '8ec90003-f315-4f60-9fb8-838830daea50': 'Nordic Buttonless DFU Control',
+  'da2e7828-fbce-4e01-ae9e-261174997c48': 'SMP Management',
+  'f7bf3564-fb6d-4e53-88a4-5e37e0326063': 'Silicon Labs OTA Control',
+  'f000ffc1-0451-4000-b000-000000000000': 'TI OAD Image Identify',
+  'f000ffc2-0451-4000-b000-000000000000': 'TI OAD Image Block',
+};
+
+const OPTIONAL_RECON_SERVICES = [
+  DEVICE_INFORMATION_SERVICE,
+  BATTERY_SERVICE,
+  ...Object.keys(DFU_SERVICES),
+];
+
+const normalizeUuid = (uuid: string): string => uuid.toLowerCase();
+
+const decodeText = (bytes: number[]): string => {
+  try {
+    return new TextDecoder().decode(new Uint8Array(bytes)).replace(/\0+$/g, '').trim();
+  } catch {
+    return '';
+  }
+};
+
+const isSafeAutoRead = (serviceUuid: string, characteristicUuid: string): boolean => {
+  const service = normalizeUuid(serviceUuid);
+  const characteristic = normalizeUuid(characteristicUuid);
+
+  if (service === DEVICE_INFORMATION_SERVICE || service === BATTERY_SERVICE) return true;
+  return characteristic === '00001534-1212-efde-1523-785feabcd123';
+};
 
 class Connection {
   name: string;
@@ -143,8 +239,7 @@ class Connection {
         optionalServices: [
           CasioConstants.WATCH_FEATURES_SERVICE_UUID,
           CasioConstants.IMMEDIATE_ALERT_SERVICE_UUID,
-          'battery_service',
-          'device_information'
+          ...OPTIONAL_RECON_SERVICES,
         ],
       });
 
@@ -184,7 +279,7 @@ class Connection {
 
         const characteristics = await this.service.getCharacteristics();
         for (const char of characteristics) {
-          this.characteristicCache.set(char.uuid, char);
+          this.characteristicCache.set(normalizeUuid(char.uuid), char);
           if (char.properties.notify || char.properties.indicate) {
             await char.startNotifications();
             char.addEventListener('characteristicvaluechanged', (event: Event) => {
@@ -224,15 +319,16 @@ class Connection {
   };
 
   private getCharacteristic = async (uuid: string): Promise<BluetoothRemoteGATTCharacteristic> => {
+    const normalized = normalizeUuid(uuid);
+    let characteristic = this.characteristicCache.get(normalized);
+    if (characteristic) return characteristic;
+
     if (!this.service) {
       throw new Error('Watch features service is not available');
     }
 
-    let characteristic = this.characteristicCache.get(uuid);
-    if (!characteristic) {
-      characteristic = await this.service.getCharacteristic(uuid);
-      this.characteristicCache.set(uuid, characteristic);
-    }
+    characteristic = await this.service.getCharacteristic(uuid);
+    this.characteristicCache.set(normalized, characteristic);
     return characteristic;
   };
 
@@ -273,20 +369,138 @@ class Connection {
     });
   };
 
-  getCharacteristicInfo = async (): Promise<BleCharacteristicInfo[]> => {
+  runGattReconnaissance = async (): Promise<BleGattReconReport> => {
     return this.enqueueGatt(async () => {
-      if (!this.service) return [];
-      const characteristics = await this.service.getCharacteristics();
-      characteristics.forEach(char => this.characteristicCache.set(char.uuid, char));
-      return characteristics.map(char => ({
-        uuid: char.uuid,
-        read: char.properties.read,
-        write: char.properties.write,
-        writeWithoutResponse: char.properties.writeWithoutResponse,
-        notify: char.properties.notify,
-        indicate: char.properties.indicate,
-      }));
+      if (!this.server || !this.isConnected()) {
+        throw new Error('Watch is not connected');
+      }
+
+      const report: BleGattReconReport = {
+        deviceName: this.device?.name ?? 'G-Shock',
+        scannedAt: new Date(),
+        services: [],
+        dfuCandidates: [],
+      };
+
+      const services = await this.server.getPrimaryServices();
+      let characteristicCount = 0;
+
+      for (const service of services) {
+        const serviceUuid = normalizeUuid(service.uuid);
+        const dfuLabel = DFU_SERVICES[serviceUuid];
+        const serviceInfo: BleGattServiceInfo = {
+          uuid: service.uuid,
+          label: SERVICE_LABELS[serviceUuid],
+          potentialDfu: !!dfuLabel,
+          characteristics: [],
+        };
+
+        if (dfuLabel) {
+          report.dfuCandidates.push(`${dfuLabel}: ${service.uuid}`);
+        }
+
+        let characteristics: BluetoothRemoteGATTCharacteristic[] = [];
+        try {
+          characteristics = await service.getCharacteristics();
+        } catch (e) {
+          this.emitLog('ERROR', undefined, undefined, `Recon could not enumerate ${service.uuid}: ${String(e)}`);
+          report.services.push(serviceInfo);
+          continue;
+        }
+
+        for (const char of characteristics) {
+          characteristicCount += 1;
+          const charUuid = normalizeUuid(char.uuid);
+          this.characteristicCache.set(charUuid, char);
+
+          const info: BleCharacteristicInfo = {
+            uuid: char.uuid,
+            serviceUuid: service.uuid,
+            read: char.properties.read,
+            write: char.properties.write,
+            writeWithoutResponse: char.properties.writeWithoutResponse,
+            notify: char.properties.notify,
+            indicate: char.properties.indicate,
+            label: CHARACTERISTIC_LABELS[charUuid],
+            potentialDfu: !!dfuLabel,
+          };
+
+          if (char.properties.read && isSafeAutoRead(serviceUuid, charUuid)) {
+            try {
+              const value = await char.readValue();
+              const bytes = Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+              info.valueBytes = bytes;
+
+              if (charUuid === BATTERY_LEVEL_CHARACTERISTIC && bytes.length) {
+                report.batteryLevel = bytes[0];
+                info.valueText = `${bytes[0]}%`;
+              } else {
+                const text = decodeText(bytes);
+                if (text) info.valueText = text;
+              }
+
+              const text = info.valueText;
+              if (charUuid === MODEL_NUMBER_CHARACTERISTIC) report.modelNumber = text;
+              if (charUuid === SERIAL_NUMBER_CHARACTERISTIC) report.serialNumber = text;
+              if (charUuid === FIRMWARE_REVISION_CHARACTERISTIC) report.firmwareRevision = text;
+              if (charUuid === HARDWARE_REVISION_CHARACTERISTIC) report.hardwareRevision = text;
+              if (charUuid === SOFTWARE_REVISION_CHARACTERISTIC) report.softwareRevision = text;
+              if (charUuid === MANUFACTURER_NAME_CHARACTERISTIC) report.manufacturerName = text;
+            } catch (e) {
+              // A readable property can still require security or reject reads.
+              // Keep the characteristic in the map and report the failure only.
+              this.emitLog('INFO', char.uuid, undefined, `Recon read blocked: ${String(e)}`);
+            }
+          }
+
+          serviceInfo.characteristics.push(info);
+        }
+
+        report.services.push(serviceInfo);
+      }
+
+      this.emitLog(
+        'INFO',
+        undefined,
+        undefined,
+        `GATT recon: ${report.services.length} services, ${characteristicCount} characteristics`,
+      );
+
+      const deviceInfoPairs: Array<[string, string | number | undefined]> = [
+        ['Model', report.modelNumber],
+        ['Serial', report.serialNumber],
+        ['Firmware', report.firmwareRevision],
+        ['Hardware', report.hardwareRevision],
+        ['Software', report.softwareRevision],
+        ['Manufacturer', report.manufacturerName],
+        ['Battery', report.batteryLevel === undefined ? undefined : `${report.batteryLevel}%`],
+      ];
+      deviceInfoPairs.forEach(([label, value]) => {
+        if (value !== undefined && value !== '') {
+          this.emitLog('INFO', undefined, undefined, `${label}: ${value}`);
+        }
+      });
+
+      if (report.dfuCandidates.length) {
+        report.dfuCandidates.forEach(candidate => {
+          this.emitLog('INFO', undefined, undefined, `DFU candidate: ${candidate}`);
+        });
+      } else {
+        this.emitLog('INFO', undefined, undefined, 'No known DFU/bootloader service detected in the permitted GATT set');
+      }
+
+      report.services.forEach(serviceInfo => {
+        const label = serviceInfo.label ? ` (${serviceInfo.label})` : '';
+        this.emitLog('INFO', undefined, undefined, `Service ${serviceInfo.uuid}${label}`);
+      });
+
+      return report;
     });
+  };
+
+  getCharacteristicInfo = async (): Promise<BleCharacteristicInfo[]> => {
+    const report = await this.runGattReconnaissance();
+    return report.services.flatMap(serviceInfo => serviceInfo.characteristics);
   };
 
   setDataReceivedCallback = (callback: (receivedData: DataView, characteristicUuid: string) => void): void => {
