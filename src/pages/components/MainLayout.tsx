@@ -1,4 +1,4 @@
-import React, { ReactNode, useContext, useEffect, useState } from 'react';
+import React, { ReactNode, useContext } from 'react';
 import { useRouter } from '@/utils/router';
 import {
     Box,
@@ -13,20 +13,20 @@ import TimeIcon from '@mui/icons-material/AccessTime';
 import AlarmsIcon from '@mui/icons-material/Alarm';
 import CalendarIcon from '@mui/icons-material/CalendarMonth';
 import SettingsIcon from '@mui/icons-material/Settings';
+import ScienceRoundedIcon from '@mui/icons-material/ScienceRounded';
 import SideNavigation, { SIDEBAR_WIDTH } from './SideNavigation';
 import { ConnectionContext } from '@/App';
 import { watchInfo } from '@api/WatchInfo';
 import pkg from '../../../package.json';
 
-interface MainLayoutProps {
-    children: ReactNode;
-}
+interface MainLayoutProps { children: ReactNode; }
 
 const NAV_ITEMS = [
     { label: 'Time', icon: <TimeIcon />, path: '/time/Time' },
     { label: 'Alarms', icon: <AlarmsIcon />, path: '/alarms/Alarms' },
     { label: 'Events', icon: <CalendarIcon />, path: '/reminders/Reminders' },
     { label: 'Settings', icon: <SettingsIcon />, path: '/settings/Settings' },
+    { label: 'BLE Lab', icon: <ScienceRoundedIcon />, path: '/ble-lab' },
 ];
 
 const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
@@ -41,28 +41,12 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
         return NAV_ITEMS;
     }, [isConnected]);
 
-    const handleNavigation = (path: string) => {
-        router.push(path);
-    };
-
-    const currentTabIndex = (() => {
-        const idx = visibleItems.findIndex(item => item.path === router.pathname);
-        if (idx !== -1) return idx;
-        return 0;
-    })();
+    const currentTabIndex = Math.max(0, visibleItems.findIndex(item => item.path === router.pathname));
 
     return (
-        <Box
-            sx={{
-                display: 'flex',
-                minHeight: '100vh',
-                bgcolor: 'background.default',
-            }}
-        >
-            {/* Desktop Side Navigation */}
+        <Box sx={{ display: 'flex', minHeight: '100vh', bgcolor: 'background.default' }}>
             {isDesktop && <SideNavigation />}
 
-            {/* Main Content Area */}
             <Box
                 component="main"
                 sx={{
@@ -71,21 +55,17 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
                     flexDirection: 'column',
                     height: { xs: '100dvh', md: '100vh' },
                     ml: { xs: 0, md: `${SIDEBAR_WIDTH}px` },
-                    pb: { xs: '88px', md: 0 },
+                    pb: { xs: '84px', md: 0 },
                     overflow: 'hidden',
                     minHeight: 0,
-                    transition: theme.transitions.create(['margin'], {
-                        easing: theme.transitions.easing.sharp,
-                        duration: theme.transitions.duration.leavingScreen,
-                    }),
                 }}
             >
                 {children}
             </Box>
 
-            {/* Mobile Bottom Navigation — only visible on mobile */}
             {!isDesktop && (
                 <Paper
+                    elevation={0}
                     sx={{
                         position: 'fixed',
                         bottom: 0,
@@ -93,72 +73,27 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
                         right: 0,
                         zIndex: 1200,
                         borderRadius: 0,
-                        boxShadow: '0 -1px 8px rgba(139, 94, 60, 0.12)',
+                        borderTop: '1px solid',
+                        borderColor: 'divider',
                         bgcolor: 'background.paper',
                     }}
-                    elevation={0}
                 >
                     <BottomNavigation
                         showLabels
                         value={currentTabIndex}
                         onChange={(_, newValue) => {
-                            if (isConnected) {
-                                handleNavigation(visibleItems[newValue].path);
-                            }
-                        }}
-                        sx={{
-                            height: 80,
-                            bgcolor: 'transparent',
-                            '& .MuiBottomNavigationAction-root': {
-                                py: 1.5,
-                                minWidth: 0,
-                                gap: 0.5,
-                            },
+                            if (isConnected && visibleItems[newValue]) router.push(visibleItems[newValue].path);
                         }}
                     >
-                        {visibleItems.map((item) => (
+                        {visibleItems.map(item => (
                             <BottomNavigationAction
                                 key={item.path}
                                 label={item.label}
                                 disabled={!isConnected}
-                                icon={
-                                    <Box
-                                        sx={{
-                                            display: 'flex',
-                                            alignItems: 'center',
-                                            justifyContent: 'center',
-                                            width: 64,
-                                            height: 32,
-                                            borderRadius: '100px',
-                                            bgcolor: currentTabIndex === visibleItems.findIndex(i => i.path === item.path) && isConnected
-                                                ? 'rgba(139, 94, 60, 0.12)'
-                                                : 'transparent',
-                                            transition: 'background-color 0.2s ease',
-                                        }}
-                                    >
-                                        {item.icon}
-                                    </Box>
-                                }
+                                icon={item.icon}
                                 sx={{
-                                    color: 'text.secondary',
-                                    '&.Mui-selected': {
-                                        color: 'primary.main',
-                                    },
-                                    '&.Mui-disabled': {
-                                        color: 'text.disabled',
-                                    },
-                                    '& .MuiBottomNavigationAction-label': {
-                                        fontSize: '0.75rem',
-                                        fontWeight: 500,
-                                        mt: 0.25,
-                                        '&.Mui-selected': {
-                                            fontSize: '0.75rem',
-                                            fontWeight: 600,
-                                        },
-                                        '&.Mui-disabled': {
-                                            color: 'text.disabled',
-                                        },
-                                    },
+                                    minWidth: 0,
+                                    '& .MuiBottomNavigationAction-label': { fontSize: '0.68rem' },
                                 }}
                             />
                         ))}
@@ -166,15 +101,14 @@ const MainLayout: React.FC<MainLayoutProps> = ({ children }) => {
                 </Paper>
             )}
 
-            {/* Version Display */}
             <Typography
                 variant="caption"
                 sx={{
                     position: 'fixed',
-                    bottom: { xs: 92, md: 16 }, // Above bottom nav on mobile
-                    right: 16,
+                    bottom: { xs: 82, md: 12 },
+                    right: 14,
                     color: 'text.disabled',
-                    fontSize: '0.65rem',
+                    fontSize: '0.62rem',
                     zIndex: 2000,
                     pointerEvents: 'none',
                 }}
