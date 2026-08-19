@@ -37,6 +37,11 @@ class Connection {
   private logHistory: BleLogEntry[] = [];
   private logId = 0;
 
+  // Web Bluetooth only permits one active GATT operation at a time on many
+  // Windows/Chrome stacks. Route reads, writes and enumeration through this
+  // promise chain so BLE Lab cannot collide with the normal API.
+  private gattQueue: Promise<void> = Promise.resolve();
+
   constructor() {
     this.name = "";
     this.device = null;
@@ -44,6 +49,15 @@ class Connection {
     this.service = null;
     this.characteristicCache = new Map();
   }
+
+  private enqueueGatt = <T,>(operation: () => Promise<T>): Promise<T> => {
+    const run = this.gattQueue.then(operation, operation);
+    this.gattQueue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
 
   private emitLog = (
     direction: BleDirection,
@@ -60,8 +74,6 @@ class Connection {
       message,
     };
 
-    // Keep a rolling history so traffic generated on another page
-    // (for example Settings) is still available when BLE Lab is reopened.
     this.logHistory.push(entry);
     if (this.logHistory.length > 500) {
       this.logHistory.splice(0, this.logHistory.length - 500);
@@ -71,7 +83,6 @@ class Connection {
   };
 
   subscribeLogs = (listener: (entry: BleLogEntry) => void): (() => void) => {
-    // Replay previously captured traffic to newly mounted BLE Lab pages.
     this.logHistory.forEach(entry => listener(entry));
     this.logListeners.add(listener);
     return () => this.logListeners.delete(listener);
@@ -123,6 +134,7 @@ class Connection {
         this.server = null;
         this.service = null;
         this.characteristicCache.clear();
+        this.gattQueue = Promise.resolve();
         this.emitLog('INFO', undefined, undefined, 'Watch disconnected');
         progressEvents.onNext("Disconnected");
       });
@@ -187,17 +199,19 @@ class Connection {
   };
 
   write = async (handleOrUuid: string, value: any): Promise<void> => {
-    try {
-      const characteristic = await this.getCharacteristic(handleOrUuid);
-      const bytes = Array.from(new Uint8Array(value));
-      await characteristic.writeValue(new Uint8Array(bytes));
-      this.emitLog('TX', characteristic.uuid, bytes);
-      console.log(`Write: ${handleOrUuid} | value: ${bytes.map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
-    } catch (e) {
-      console.error(`Characteristic ${handleOrUuid} write failed`, e);
-      this.emitLog('ERROR', handleOrUuid, undefined, String(e));
-      throw e;
-    }
+    return this.enqueueGatt(async () => {
+      try {
+        const characteristic = await this.getCharacteristic(handleOrUuid);
+        const bytes = Array.from(new Uint8Array(value));
+        await characteristic.writeValue(new Uint8Array(bytes));
+        this.emitLog('TX', characteristic.uuid, bytes);
+        console.log(`Write: ${handleOrUuid} | value: ${bytes.map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
+      } catch (e) {
+        console.error(`Characteristic ${handleOrUuid} write failed`, e);
+        this.emitLog('ERROR', handleOrUuid, undefined, String(e));
+        throw e;
+      }
+    });
   };
 
   writeRaw = async (uuid: string, bytes: number[]): Promise<void> => {
@@ -209,28 +223,32 @@ class Connection {
   };
 
   readRaw = async (uuid: string): Promise<number[]> => {
-    const characteristic = await this.getCharacteristic(uuid);
-    if (!characteristic.properties.read) {
-      throw new Error('Characteristic is not readable');
-    }
-    const value = await characteristic.readValue();
-    const bytes = Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
-    this.emitLog('RX', characteristic.uuid, bytes, 'Read');
-    return bytes;
+    return this.enqueueGatt(async () => {
+      const characteristic = await this.getCharacteristic(uuid);
+      if (!characteristic.properties.read) {
+        throw new Error('Characteristic is not readable');
+      }
+      const value = await characteristic.readValue();
+      const bytes = Array.from(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
+      this.emitLog('RX', characteristic.uuid, bytes, 'Read');
+      return bytes;
+    });
   };
 
   getCharacteristicInfo = async (): Promise<BleCharacteristicInfo[]> => {
-    if (!this.service) return [];
-    const characteristics = await this.service.getCharacteristics();
-    characteristics.forEach(char => this.characteristicCache.set(char.uuid, char));
-    return characteristics.map(char => ({
-      uuid: char.uuid,
-      read: char.properties.read,
-      write: char.properties.write,
-      writeWithoutResponse: char.properties.writeWithoutResponse,
-      notify: char.properties.notify,
-      indicate: char.properties.indicate,
-    }));
+    return this.enqueueGatt(async () => {
+      if (!this.service) return [];
+      const characteristics = await this.service.getCharacteristics();
+      characteristics.forEach(char => this.characteristicCache.set(char.uuid, char));
+      return characteristics.map(char => ({
+        uuid: char.uuid,
+        read: char.properties.read,
+        write: char.properties.write,
+        writeWithoutResponse: char.properties.writeWithoutResponse,
+        notify: char.properties.notify,
+        indicate: char.properties.indicate,
+      }));
+    });
   };
 
   setDataReceivedCallback = (callback: (receivedData: DataView, characteristicUuid: string) => void): void => {
