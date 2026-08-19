@@ -85,7 +85,9 @@ class Connection {
   subscribeLogs = (listener: (entry: BleLogEntry) => void): (() => void) => {
     this.logHistory.forEach(entry => listener(entry));
     this.logListeners.add(listener);
-    return () => this.logListeners.delete(listener);
+    return () => {
+      this.logListeners.delete(listener);
+    };
   };
 
   getLogs = (): BleLogEntry[] => [...this.logHistory];
