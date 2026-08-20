@@ -9,7 +9,7 @@ const TimePage = lazy(() => import('@pages/time/Time.page'))
 const AlarmsPage = lazy(() => import('@pages/alarms/Alarms.page'))
 const RemindersPage = lazy(() => import('@pages/reminders/Reminders.page'))
 const SettingsPage = lazy(() => import('@pages/settings/Settings.page'))
-const BleLabPage = lazy(() => import('@pages/ble-lab/BleLab.page'))
+const BleLabPage = lazy(() => import('@pages/ble-lab/BleLabEnhanced.page'))
 
 registerComponents({
   '/': HomePage,
