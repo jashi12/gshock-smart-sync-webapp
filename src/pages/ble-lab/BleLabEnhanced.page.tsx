@@ -18,14 +18,23 @@ import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import { ConnectionContext } from '@/App';
 import { connection, BleGattReconReport } from '@api/Connection';
+import { CasioConstants } from '@api/CasioConstants';
 import { WATCH_MODEL, watchInfo } from '@api/WatchInfo';
 import BleLabPage from './BleLab.page';
 
-const CASIO_VERSION_INFORMATION_UUID = '26eb0028-b012-49a8-b1f8-394fb2032b0f';
-const BASIC_SET_UUID = '26eb002d-b012-49a8-b1f8-394fb2032b0f';
+// CASIO_VERSION_INFORMATION is a logical Watch Features item (26eb0028 in
+// Casio's Android enum), but GW-BX5600 does not expose 0x0028 as a physical
+// GATT characteristic. The official app requests class 0x20 through the
+// multiplexed All Features transport: request on 0x002c, response on 0x002d.
+const VERSION_INFORMATION_LOGICAL_UUID = '26eb0028-b012-49a8-b1f8-394fb2032b0f';
+const READ_REQUEST_UUID = CasioConstants.CASIO_READ_REQUEST_FOR_ALL_FEATURES_CHARACTERISTIC_UUID;
+const ALL_FEATURES_UUID = CasioConstants.CASIO_ALL_FEATURES_CHARACTERISTIC_UUID;
+const VERSION_INFORMATION_COMMAND = 0x20;
+const BASIC_SET_UUID = ALL_FEATURES_UUID.toLowerCase();
 
 interface VersionInfo {
-  raw: number[];
+  wirePacket: number[];
+  data: number[];
   protectWatchSoft: number;
   rewritableWatchSoft: number;
   bleFirmVersion?: number;
@@ -118,14 +127,29 @@ export default function BleLabEnhancedPage() {
     try {
       setBusy(true);
       setError('');
-      const bytes = await connection.readRaw(CASIO_VERSION_INFORMATION_UUID);
+
+      // Match only the future class-0x20 response. As with Basic Settings
+      // (0x13), the first byte on 0x002d is the logical item/class ID and the
+      // remaining bytes are the value exposed to VersionInformation.getVersion().
+      const responsePromise = connection.waitForRx(
+        ALL_FEATURES_UUID,
+        bytes => bytes.length > 0 && bytes[0] === VERSION_INFORMATION_COMMAND,
+        4000,
+      );
+
+      await connection.writeRaw(READ_REQUEST_UUID, [VERSION_INFORMATION_COMMAND]);
+      const wirePacket = await responsePromise;
+      const bytes = wirePacket.slice(1);
 
       if (bytes.length <= 3) {
-        throw new Error(`CASIO_VERSION_INFORMATION returned only ${bytes.length} byte(s); expected at least 4.`);
+        throw new Error(
+          `Version Information response contained only ${bytes.length} data byte(s) after the 0x20 header; expected at least 4. Wire packet: ${toRawHex(wirePacket)}`,
+        );
       }
 
       setInfo({
-        raw: bytes,
+        wirePacket,
+        data: bytes,
         protectWatchSoft: bytes[2],
         rewritableWatchSoft: bytes[3],
         casioFirmVersion: bytes.length > 9 ? bytes[9] : undefined,
@@ -155,7 +179,10 @@ export default function BleLabEnhancedPage() {
     if (!info) return;
 
     const lines = [
-      `CASIO_VERSION_INFORMATION: ${toRawHex(info.raw)}`,
+      `CASIO_VERSION_INFORMATION logical item: ${VERSION_INFORMATION_LOGICAL_UUID}`,
+      `Transport request: ${READ_REQUEST_UUID} <= 20`,
+      `Transport response: ${ALL_FEATURES_UUID} => ${toRawHex(info.wirePacket)}`,
+      `Version data (0x20 header removed): ${toRawHex(info.data)}`,
       `PROTECT_WATCH_SOFT [2]: ${toHexByte(info.protectWatchSoft)} (${info.protectWatchSoft})`,
       `REWRITABLE_WATCH_SOFT [3]: ${toHexByte(info.rewritableWatchSoft)} (${info.rewritableWatchSoft})`,
       `CASIO_FIRM [9]: ${toHexByte(info.casioFirmVersion)}`,
@@ -211,7 +238,7 @@ export default function BleLabEnhancedPage() {
         <DialogContent>
           <Stack gap={2.25} sx={{ pt: 0.5 }}>
             <Alert severity="info" variant="outlined">
-              These controls are read-only. They do not write firmware, modify settings or enter update mode.
+              These controls perform read/query operations only. The Version Information query writes the class ID 0x20 to Casio's read-request characteristic; it does not modify settings, write firmware or enter update mode.
             </Alert>
 
             <Box>
@@ -219,7 +246,7 @@ export default function BleLabEnhancedPage() {
                 <Box>
                   <Typography fontWeight={700}>GATT scan</Typography>
                   <Typography variant="body2" color="text.secondary">
-                    Shows an explicit success result instead of only flashing the progress bar.
+                    Enumerates the services and physical characteristics Web Bluetooth can access.
                   </Typography>
                 </Box>
                 <Button
@@ -235,7 +262,7 @@ export default function BleLabEnhancedPage() {
               {scanError && <Alert severity="error" sx={{ mt: 1.5 }}>{scanError}</Alert>}
               {recon && (
                 <Alert severity="success" variant="outlined" sx={{ mt: 1.5 }}>
-                  Scan complete: {recon.services} permitted services and {recon.characteristics} characteristics discovered.
+                  Scan complete: {recon.services} permitted services and {recon.characteristics} physical characteristics discovered.
                 </Alert>
               )}
             </Box>
@@ -247,7 +274,7 @@ export default function BleLabEnhancedPage() {
                 <Box>
                   <Typography fontWeight={700}>CASIO_VERSION_INFORMATION</Typography>
                   <Typography variant="body2" color="text.secondary">
-                    Reads WatchSoft protection/version bytes and BLE firmware version.
+                    Queries logical item 0x0028 using Casio All Features class 0x20, then decodes WatchSoft and BLE firmware versions.
                   </Typography>
                 </Box>
                 <Button
@@ -256,28 +283,33 @@ export default function BleLabEnhancedPage() {
                   onClick={readVersionInfo}
                   disabled={!isConnected || busy || scanBusy}
                 >
-                  {busy ? 'Reading…' : 'Read 0x0028'}
+                  {busy ? 'Reading…' : 'Read versions'}
                 </Button>
               </Stack>
 
-              <Typography sx={{ mt: 1, fontFamily: 'monospace', fontSize: 12.5, wordBreak: 'break-all' }} color="text.secondary">
-                {CASIO_VERSION_INFORMATION_UUID}
-              </Typography>
+              <Stack gap={0.5} mt={1}>
+                <Typography sx={{ fontFamily: 'monospace', fontSize: 12.5, wordBreak: 'break-all' }} color="text.secondary">
+                  logical: {VERSION_INFORMATION_LOGICAL_UUID}
+                </Typography>
+                <Typography sx={{ fontFamily: 'monospace', fontSize: 12.5, wordBreak: 'break-all' }} color="text.secondary">
+                  TX 002c: 20 → RX 002d: 20 ...
+                </Typography>
+              </Stack>
             </Box>
 
             {error && <Alert severity="error">{error}</Alert>}
 
             {!info ? (
               <Typography variant="body2" color="text.secondary">
-                Press Read 0x0028. Byte 2 is PROTECT_WATCH_SOFT, byte 3 is the installed/rewriteable WatchSoft version, and byte 12 is BLE_FIRM_VER when present.
+                Press Read versions. After removing the leading 0x20 transport byte, data byte 2 is PROTECT_WATCH_SOFT, byte 3 is the installed/rewriteable WatchSoft version, and byte 12 is BLE_FIRM_VER when present.
               </Typography>
             ) : (
               <>
                 <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: 'repeat(3, 1fr)' }, gap: 1.25 }}>
                   {[
-                    ['Protect WatchSoft', toHexByte(info.protectWatchSoft), 'byte 2'],
-                    ['Installed WatchSoft', toHexByte(info.rewritableWatchSoft), 'byte 3'],
-                    ['BLE firmware', toHexByte(info.bleFirmVersion), 'byte 12'],
+                    ['Protect WatchSoft', toHexByte(info.protectWatchSoft), 'data byte 2'],
+                    ['Installed WatchSoft', toHexByte(info.rewritableWatchSoft), 'data byte 3'],
+                    ['BLE firmware', toHexByte(info.bleFirmVersion), 'data byte 12'],
                   ].map(([label, value, detail]) => (
                     <Box key={label} sx={{ p: 1.5, borderRadius: 2, bgcolor: 'action.hover' }}>
                       <Typography variant="caption" color="text.secondary">{label}</Typography>
@@ -288,10 +320,16 @@ export default function BleLabEnhancedPage() {
                 </Box>
 
                 <Box>
-                  <Typography variant="body2" fontWeight={700} mb={0.75}>Raw 0x0028 value</Typography>
+                  <Typography variant="body2" fontWeight={700} mb={0.75}>Wire response (0x002d)</Typography>
                   <Box sx={{ p: 1.5, borderRadius: 2, bgcolor: 'action.hover' }}>
                     <Typography sx={{ fontFamily: 'monospace', fontSize: 12.5, wordBreak: 'break-all' }}>
-                      {toRawHex(info.raw)}
+                      {toRawHex(info.wirePacket)}
+                    </Typography>
+                  </Box>
+                  <Typography variant="body2" fontWeight={700} mt={1.5} mb={0.75}>Decoded Version Information data</Typography>
+                  <Box sx={{ p: 1.5, borderRadius: 2, bgcolor: 'action.hover' }}>
+                    <Typography sx={{ fontFamily: 'monospace', fontSize: 12.5, wordBreak: 'break-all' }}>
+                      {toRawHex(info.data)}
                     </Typography>
                   </Box>
                 </Box>
