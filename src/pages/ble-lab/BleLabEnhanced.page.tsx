@@ -15,12 +15,14 @@ import {
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import MemoryRoundedIcon from '@mui/icons-material/MemoryRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
+import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import { ConnectionContext } from '@/App';
-import { connection } from '@api/Connection';
+import { connection, BleGattReconReport } from '@api/Connection';
 import { WATCH_MODEL, watchInfo } from '@api/WatchInfo';
 import BleLabPage from './BleLab.page';
 
 const CASIO_VERSION_INFORMATION_UUID = '26eb0028-b012-49a8-b1f8-394fb2032b0f';
+const BASIC_SET_UUID = '26eb002d-b012-49a8-b1f8-394fb2032b0f';
 
 interface VersionInfo {
   raw: number[];
@@ -30,24 +32,70 @@ interface VersionInfo {
   casioFirmVersion?: number;
 }
 
+interface ReconSummary {
+  services: number;
+  characteristics: number;
+}
+
 const toHexByte = (value?: number) =>
   value === undefined ? '—' : `0x${value.toString(16).padStart(2, '0').toUpperCase()}`;
 
 const toRawHex = (bytes: number[]) =>
   bytes.map(byte => byte.toString(16).padStart(2, '0').toUpperCase()).join(' ');
 
+const reconSummaryFromReport = (report: BleGattReconReport): ReconSummary => ({
+  services: report.services.length,
+  characteristics: report.services.reduce((sum, service) => sum + service.characteristics.length, 0),
+});
+
 export default function BleLabEnhancedPage() {
   const { isConnected } = useContext(ConnectionContext);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [scanBusy, setScanBusy] = useState(false);
   const [error, setError] = useState('');
+  const [scanError, setScanError] = useState('');
   const [info, setInfo] = useState<VersionInfo | null>(null);
+  const [recon, setRecon] = useState<ReconSummary | null>(null);
+  const [baselineCaptured, setBaselineCaptured] = useState(false);
+
+  useEffect(() => {
+    const refreshDerivedState = () => {
+      const history = connection.getLogs();
+
+      const latestRecon = history
+        .slice()
+        .reverse()
+        .find(entry => entry.direction === 'INFO' && entry.message?.startsWith('GATT recon:'));
+
+      if (latestRecon?.message) {
+        const match = latestRecon.message.match(/GATT recon:\s*(\d+)\s+services,\s*(\d+)\s+characteristics/i);
+        if (match) {
+          setRecon({ services: Number(match[1]), characteristics: Number(match[2]) });
+        }
+      }
+
+      setBaselineCaptured(history.some(entry =>
+        entry.direction === 'TX' &&
+        entry.characteristic?.toLowerCase() === BASIC_SET_UUID &&
+        entry.bytes?.length === 17 &&
+        entry.bytes[0] === 0x13,
+      ));
+    };
+
+    refreshDerivedState();
+    return connection.subscribeLogs(() => refreshDerivedState());
+  }, []);
 
   useEffect(() => {
     if (!isConnected) {
       setInfo(null);
+      setRecon(null);
       setError('');
+      setScanError('');
       setBusy(false);
+      setScanBusy(false);
+      setBaselineCaptured(false);
     }
   }, [isConnected]);
 
@@ -90,6 +138,19 @@ export default function BleLabEnhancedPage() {
     }
   };
 
+  const runVisibleGattScan = async () => {
+    try {
+      setScanBusy(true);
+      setScanError('');
+      const report = await connection.runGattReconnaissance();
+      setRecon(reconSummaryFromReport(report));
+    } catch (e) {
+      setScanError(String(e));
+    } finally {
+      setScanBusy(false);
+    }
+  };
+
   const copyInfo = async () => {
     if (!info) return;
 
@@ -116,32 +177,90 @@ export default function BleLabEnhancedPage() {
     <>
       <BleLabPage />
 
-      <Button
-        variant="contained"
-        startIcon={<MemoryRoundedIcon />}
-        onClick={() => setOpen(true)}
+      <Stack
+        direction="row"
+        gap={1}
+        alignItems="center"
         sx={{
           position: 'fixed',
           right: { xs: 16, sm: 24 },
           bottom: { xs: 92, sm: 24 },
           zIndex: 1200,
-          boxShadow: 6,
         }}
       >
-        Watch software
-      </Button>
+        {recon && (
+          <Chip
+            label={`GATT ${recon.services} svc · ${recon.characteristics} chars`}
+            color="success"
+            variant="filled"
+            sx={{ boxShadow: 4 }}
+          />
+        )}
+        <Button
+          variant="contained"
+          startIcon={<MemoryRoundedIcon />}
+          onClick={() => setOpen(true)}
+          sx={{ boxShadow: 6 }}
+        >
+          Firmware tools
+        </Button>
+      </Stack>
 
       <Dialog open={open} onClose={() => setOpen(false)} fullWidth maxWidth="sm">
-        <DialogTitle>Watch software / firmware info</DialogTitle>
+        <DialogTitle>Firmware / WatchSoft tools</DialogTitle>
         <DialogContent>
           <Stack gap={2.25} sx={{ pt: 0.5 }}>
             <Alert severity="info" variant="outlined">
-              Read-only: this reads CASIO_VERSION_INFORMATION (0x0028). It does not write to the watch or start an update.
+              These controls are read-only. They do not write firmware, modify settings or enter update mode.
             </Alert>
 
             <Box>
-              <Typography variant="body2" color="text.secondary">Characteristic</Typography>
-              <Typography sx={{ mt: 0.5, fontFamily: 'monospace', fontSize: 12.5, wordBreak: 'break-all' }}>
+              <Stack direction="row" justifyContent="space-between" gap={2} alignItems="center">
+                <Box>
+                  <Typography fontWeight={700}>GATT scan</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Shows an explicit success result instead of only flashing the progress bar.
+                  </Typography>
+                </Box>
+                <Button
+                  variant="outlined"
+                  startIcon={<SearchRoundedIcon />}
+                  onClick={runVisibleGattScan}
+                  disabled={!isConnected || scanBusy || busy}
+                >
+                  {scanBusy ? 'Scanning…' : 'Scan'}
+                </Button>
+              </Stack>
+
+              {scanError && <Alert severity="error" sx={{ mt: 1.5 }}>{scanError}</Alert>}
+              {recon && (
+                <Alert severity="success" variant="outlined" sx={{ mt: 1.5 }}>
+                  Scan complete: {recon.services} permitted services and {recon.characteristics} characteristics discovered.
+                </Alert>
+              )}
+            </Box>
+
+            <Divider />
+
+            <Box>
+              <Stack direction="row" justifyContent="space-between" gap={2} alignItems="center">
+                <Box>
+                  <Typography fontWeight={700}>CASIO_VERSION_INFORMATION</Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Reads WatchSoft protection/version bytes and BLE firmware version.
+                  </Typography>
+                </Box>
+                <Button
+                  variant="contained"
+                  startIcon={<RefreshRoundedIcon />}
+                  onClick={readVersionInfo}
+                  disabled={!isConnected || busy || scanBusy}
+                >
+                  {busy ? 'Reading…' : 'Read 0x0028'}
+                </Button>
+              </Stack>
+
+              <Typography sx={{ mt: 1, fontFamily: 'monospace', fontSize: 12.5, wordBreak: 'break-all' }} color="text.secondary">
                 {CASIO_VERSION_INFORMATION_UUID}
               </Typography>
             </Box>
@@ -150,7 +269,7 @@ export default function BleLabEnhancedPage() {
 
             {!info ? (
               <Typography variant="body2" color="text.secondary">
-                Read the characteristic to decode the WatchSoft protection byte, installed WatchSoft version and BLE firmware version.
+                Press Read 0x0028. Byte 2 is PROTECT_WATCH_SOFT, byte 3 is the installed/rewriteable WatchSoft version, and byte 12 is BLE_FIRM_VER when present.
               </Typography>
             ) : (
               <>
@@ -203,28 +322,28 @@ export default function BleLabEnhancedPage() {
                   </>
                 ) : (
                   <Alert severity="warning" variant="outlined">
-                    The automatic 3575 server-path derivation is enabled only for GW-BX5600 / GMW-BZ5000 models.
+                    Automatic 3575 server-path derivation is enabled only for GW-BX5600 / GMW-BZ5000 models.
                   </Alert>
                 )}
               </>
             )}
+
+            <Divider />
+
+            <Alert severity={baselineCaptured ? 'success' : 'warning'} variant="outlined">
+              {baselineCaptured
+                ? 'A 17-byte 0x13 Basic Settings TX is now present in the BLE log, so “Use latest 0x13 TX” should work.'
+                : 'The “No 17-byte 0x13 settings write” message belongs to the separate Basic Settings bit-probe tool, not this firmware reader. Change a normal setting first, or use the existing known-good baseline already shown in that probe.'}
+            </Alert>
           </Stack>
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2.5 }}>
           {info && (
             <Button startIcon={<ContentCopyRoundedIcon />} onClick={copyInfo}>
-              Copy
+              Copy firmware info
             </Button>
           )}
           <Button onClick={() => setOpen(false)}>Close</Button>
-          <Button
-            variant="contained"
-            startIcon={<RefreshRoundedIcon />}
-            onClick={readVersionInfo}
-            disabled={!isConnected || busy}
-          >
-            {busy ? 'Reading…' : 'Read 0x0028'}
-          </Button>
         </DialogActions>
       </Dialog>
     </>
